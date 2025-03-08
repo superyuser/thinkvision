@@ -1,0 +1,14 @@
+Metadata-Version: 2.2
+Name: smart_vision_assistant
+Version: 0.1
+Requires-Dist: opencv-python>=4.8.0
+Requires-Dist: anthropic>=0.7.0
+Requires-Dist: fastapi>=0.104.0
+Requires-Dist: uvicorn>=0.24.0
+Requires-Dist: python-multipart>=0.0.6
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: pillow>=10.0.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: sqlalchemy>=2.0.0
+Requires-Dist: aiofiles>=23.2.1
+Dynamic: requires-dist
