@@ -1,0 +1,14 @@
+README.md
+setup.py
+src/__init__.py
+src/ai_vision.py
+src/gemini_vision.py
+src/main.py
+src/storage.py
+src/video_processor.py
+src/voice_interface.py
+thinkvision.egg-info/PKG-INFO
+thinkvision.egg-info/SOURCES.txt
+thinkvision.egg-info/dependency_links.txt
+thinkvision.egg-info/requires.txt
+thinkvision.egg-info/top_level.txt

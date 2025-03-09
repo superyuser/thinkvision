@@ -1,156 +1,187 @@
+import os
 import cv2
 import numpy as np
-from typing import Tuple, Optional, Generator, Dict, Any
 import asyncio
-from datetime import datetime
 from pathlib import Path
-from .ai_vision import AnthropicVision
-from .storage import ObjectStorage
+import tempfile
+import json
+from typing import Dict, List, Any, Generator, Tuple, AsyncGenerator
+import time
+import base64
+import PIL  # Import the entire PIL package
+from src.gemini_vision import GeminiVision
 
 class VideoProcessor:
-    def __init__(self):
+    def __init__(self, debug_mode: bool = True):
+        """Initialize video processor"""
         self.video = None
-        self.frame_width = 640
-        self.frame_height = 480
-        self.processing = False
-        self.current_frame_count = 0
-        self.total_frames = 0
-        self.vision = AnthropicVision()
-        self.storage = ObjectStorage()
-        self.last_objects = []
+        self.frame_count = 0
+        self.fps = 0
+        self.duration = 0
+        self.vision_processor = GeminiVision()
+        self.all_ingredients = set()
+        self.frame_ingredients = []
+        self.debug_mode = debug_mode
 
     async def load_video(self, video_path: str) -> bool:
-        """Load a video file for processing"""
-        if not Path(video_path).exists():
-            return False
+        """Load video file and extract metadata"""
+        try:
+            # Check if file exists
+            if not os.path.exists(video_path):
+                print(f"Video file not found: {video_path}")
+                return False
+                
+            # Open video file
+            self.video = cv2.VideoCapture(video_path)
+            if not self.video.isOpened():
+                print(f"Failed to open video: {video_path}")
+                return False
+                
+            # Get video metadata
+            self.frame_count = int(self.video.get(cv2.CAP_PROP_FRAME_COUNT))
+            self.fps = self.video.get(cv2.CAP_PROP_FPS)
+            self.duration = self.frame_count / self.fps if self.fps > 0 else 0
             
-        self.video = cv2.VideoCapture(video_path)
-        if not self.video.isOpened():
-            return False
+            print(f"Video loaded: {video_path}")
+            print(f"Frames: {self.frame_count}, FPS: {self.fps}, Duration: {self.duration:.2f}s")
             
-        self.total_frames = int(self.video.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.current_frame_count = 0
-        self.frame_width = int(self.video.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.frame_height = int(self.video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        return True
+            return True
+            
+        except Exception as e:
+            print(f"Error loading video: {e}")
+            return False
 
-    async def get_frame(self) -> Optional[np.ndarray]:
-        """Get next frame from the video"""
+    async def process_video(self, video_path: str, sample_rate=10) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Process video and extract ingredients
+        
+        Args:
+            video_path: Path to the video file
+            sample_rate: Process every Nth frame (default: 10)
+            
+        Yields:
+            Dictionary with frame path and detected ingredients
+        """
+        try:
+            # Load the video first
+            success = await self.load_video(video_path)
+            if not success:
+                raise ValueError(f"Failed to load video: {video_path}")
+            
+            # Create output directory for frames
+            output_dir = Path("static/frames")
+            output_dir.mkdir(exist_ok=True, parents=True)
+            
+            # Reset state
+            self.all_ingredients = set()
+            self.frame_ingredients = []
+            
+            # Process frames
+            frame_index = 0
+            processed_count = 0
+            
+            while True:
+                # Read frame
+                ret, frame = self.video.read()
+                if not ret:
+                    break
+                    
+                # Process every Nth frame
+                if frame_index % sample_rate == 0:
+                    # Save frame to disk
+                    frame_filename = f"frame_{processed_count:04d}.jpg"
+                    frame_path = output_dir / frame_filename
+                    cv2.imwrite(str(frame_path), frame)
+                    
+                    # Process frame with Gemini Vision
+                    print(f"Processing frame {frame_index} (saved as {frame_filename})")
+                    
+                    # Add a small delay to avoid rate limiting
+                    await asyncio.sleep(0.1)
+                    
+                    # Process with vision API
+                    try:
+                        # Use a hardcoded list of ingredients for testing if needed
+                        # ingredients = [{"label": "tomato", "category": "ingredient", "confidence": 0.95}]
+                        
+                        # Process with Gemini Vision
+                        ingredients = await self.vision_processor.process_frame(frame, debug_mode=self.debug_mode)
+                        
+                        # If no ingredients were found, add a placeholder for testing
+                        if not ingredients and self.debug_mode:
+                            print("No ingredients detected, adding test ingredient for debugging")
+                            ingredients = [{"label": "test ingredient", "category": "ingredient", "confidence": 0.99}]
+                        
+                        # Update all ingredients set
+                        for ingredient in ingredients:
+                            self.all_ingredients.add(ingredient["label"])
+                        
+                        # Add to frame ingredients
+                        frame_data = {
+                            "frame_path": f"/static/frames/{frame_filename}",
+                            "ingredients": ingredients
+                        }
+                        self.frame_ingredients.append(frame_data)
+                        
+                        # Yield progress update
+                        yield frame_data
+                        
+                        processed_count += 1
+                    except Exception as e:
+                        print(f"Error processing frame {frame_index}: {e}")
+                        # Continue to next frame on error
+                
+                frame_index += 1
+            
+            # Release video
+            self.video.release()
+            
+            print(f"Video processing complete. Processed {processed_count} frames.")
+            print(f"Detected {len(self.all_ingredients)} unique ingredients: {', '.join(self.all_ingredients)}")
+            
+        except Exception as e:
+            print(f"Error in process_video: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+    def get_frame(self, frame_number: int) -> Tuple[bool, np.ndarray]:
+        """Get specific frame from video"""
         if not self.video or not self.video.isOpened():
-            return None
-        
-        ret, frame = self.video.read()
-        if not ret:
-            return None
+            return False, None
             
-        self.current_frame_count += 1
-        return frame
-
-    def get_progress(self) -> float:
-        """Get current processing progress as percentage"""
-        if self.total_frames == 0:
-            return 0.0
-        return (self.current_frame_count / self.total_frames) * 100
-
-    async def process_video(self, video_path: str) -> Generator[Tuple[np.ndarray, dict], None, None]:
-        """Process entire video and yield frames with metadata"""
-        if not await self.load_video(video_path):
-            return
-
-        while True:
-            frame = await self.get_frame()
-            if frame is None:
-                break
-
-            annotated_frame, metadata = await self.process_frame(frame)
-            if annotated_frame is not None:
-                yield annotated_frame, metadata
-
-        self.release()
-
-    async def process_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, dict]:
-        """Process a frame and return the annotated frame with metadata"""
-        if frame is None:
-            return None, {}
-
-        # Create a copy for annotation
-        annotated_frame = frame.copy()
+        # Set position to requested frame
+        self.video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
         
-        # Detect objects using AI Vision
-        detected_objects = await self.vision.process_frame(frame)
+        # Read frame
+        ret, frame = self.video.read()
         
-        # Add visual overlays
-        annotated_frame = self.add_overlay(annotated_frame, detected_objects)
-        
-        # Store objects in database
-        if detected_objects:
-            await self.storage.store_objects(
-                frame_number=self.current_frame_count,
-                timestamp=datetime.now(),
-                objects=detected_objects
-            )
-            self.last_objects = detected_objects
-        
-        # Basic frame metadata
-        metadata = {
-            "timestamp": datetime.now().isoformat(),
-            "frame_size": frame.shape,
-            "frame_number": self.current_frame_count,
-            "total_frames": self.total_frames,
-            "progress_percent": self.get_progress(),
-            "objects": detected_objects
-        }
+        return ret, frame
 
-        return annotated_frame, metadata
+    def create_thumbnail(self, frame: np.ndarray) -> str:
+        """Create a base64 encoded thumbnail of the frame"""
+        try:
+            # Resize frame to thumbnail size
+            height, width = frame.shape[:2]
+            max_dim = 300
+            scale = max_dim / max(height, width)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            thumbnail = cv2.resize(frame, (new_width, new_height))
+            
+            # Convert to JPEG
+            _, buffer = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            
+            # Convert to base64
+            base64_thumbnail = base64.b64encode(buffer).decode('utf-8')
+            
+            return f"data:image/jpeg;base64,{base64_thumbnail}"
+        except Exception as e:
+            print(f"Error creating thumbnail: {e}")
+            return ""
 
-    def add_overlay(self, frame: np.ndarray, objects: list) -> np.ndarray:
-        """Add text overlays for detected objects"""
-        if frame is None or not objects:
-            return frame
-
-        overlay = frame.copy()
-        alpha = 0.3  # Transparency factor
-
-        for obj in objects:
-            if "bbox" in obj and "label" in obj:
-                x1, y1, x2, y2 = obj["bbox"]
-                conf = obj.get("confidence", 0.0)
-                
-                # Draw semi-transparent background for text
-                cv2.rectangle(overlay, (x1, y1-25), (x1 + len(obj["label"])*10, y1), (0, 0, 0), -1)
-                
-                # Draw bounding box with confidence-based color
-                color = (0, int(255 * conf), 0)  # Green based on confidence
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                
-                # Add label with confidence score
-                label = f"{obj['label']} ({conf:.2f})"
-                cv2.putText(frame, label, (x1, y1 - 10),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                
-                # Add object category and description as tooltip
-                if "category" in obj and "description" in obj:
-                    tooltip = f"{obj['category']}: {obj['description']}"
-                    cv2.putText(frame, tooltip, (x1, y2 + 15),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
-
-        # Blend the overlay with the original frame
-        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-        return frame
-
-    async def search_objects(self, query: str) -> list:
-        """Search for objects in processed frames"""
-        return await self.vision.search_objects(query)
-
-    def get_frame_objects(self, frame_number: int) -> list:
-        """Get objects detected in a specific frame"""
-        return self.vision.get_frame_objects(frame_number)
-
-    def release(self):
-        """Release video resources"""
-        if self.video:
+    def close(self):
+        """Close video file"""
+        if self.video and self.video.isOpened():
             self.video.release()
             self.video = None
-            
-    def __del__(self):
-        self.release()

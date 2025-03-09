@@ -1,37 +1,42 @@
-import os
-import anthropic
-from PIL import Image
-import io
 import base64
-import numpy as np
-from typing import List, Dict, Any, Tuple
 import cv2
+import numpy as np
+from typing import List, Dict, Any
 import json
 import re
 import time
+import os
+from anthropic import Anthropic
+from dotenv import load_dotenv
 
 class AnthropicVision:
     def __init__(self):
-        self.client = anthropic.Client(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        self.cache = {}  # Simple cache for recent object detections
-        self.cache_size = 100
-        self.frame_count = 0
-        self.last_processed_frame = None
+        """Initialize Anthropic Vision API"""
+        try:
+            # Load environment variables
+            load_dotenv()
+            api_key = os.getenv('ANTHROPIC_API_KEY')
+            if not api_key:
+                raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
+            
+            # Initialize Anthropic client
+            self.client = Anthropic(api_key=api_key)
+            print("Anthropic Vision API initialized successfully")
+        except Exception as e:
+            print(f"Error initializing Anthropic Vision: {e}")
+            raise
 
     async def process_frame(self, frame: np.ndarray) -> List[Dict[Any, Any]]:
         """Process a frame through Anthropic's Vision-Language Model"""
         try:
-            self.frame_count += 1
+            # Convert frame to RGB for better analysis
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Skip every other frame to reduce API calls while maintaining decent tracking
-            if self.frame_count % 2 != 0:
-                return self.last_processed_frame or []
-
             # Convert frame to base64
-            _, buffer = cv2.imencode('.jpg', frame)
+            _, buffer = cv2.imencode('.jpg', frame_rgb)
             img_base64 = base64.b64encode(buffer).decode('utf-8')
             
-            # Call Anthropic API with structured prompt
+            # Call Anthropic API with improved prompt
             response = self.client.messages.create(
                 model="claude-3-opus-20240229",
                 max_tokens=1000,
@@ -48,98 +53,104 @@ class AnthropicVision:
                         },
                         {
                             "type": "text",
-                            "text": """Analyze this image and provide object detection results in the following JSON format:
+                            "text": """Analyze this image and identify ALL visible ingredients, foods, or cooking items.
+For each item found, provide:
+- Name of the item
+- Its state or condition
+- Approximate quantity if visible
+- Location description
+- Your confidence level (0-1)
+
+Format your response EXACTLY as this JSON:
 {
     "objects": [
         {
-            "label": "object name",
-            "category": "object category",
-            "description": "brief description",
+            "label": "tomato",
+            "category": "ingredient",
+            "description": "2 ripe whole tomatoes on cutting board",
             "confidence": 0.95,
-            "bbox": [x1, y1, x2, y2]
+            "bbox": [100, 100, 200, 200]
         }
     ]
 }
-For each object, include:
-1. Accurate bounding box coordinates [x1, y1, x2, y2] relative to the image dimensions
-2. A descriptive label and category
-3. A brief but informative description
-4. A confidence score between 0 and 1
-Focus on main objects and ensure bounding boxes are properly positioned."""
+
+IMPORTANT:
+- Return ONLY the JSON, no other text
+- Include ANY food-related items
+- Include items even with lower confidence (0.3+)
+- Always use the exact field names shown above
+- If no items found, return empty objects array"""
                         }
                     ]
                 }]
             )
-
-            # Parse the response and extract object information
-            objects = self._parse_response(response.content)
             
-            # Update cache and last processed frame
-            self._update_cache(objects)
-            self.last_processed_frame = objects
+            # Print full Claude response for debugging
+            print("=== CLAUDE RESPONSE START ===")
+            print(response.content)
+            print("=== CLAUDE RESPONSE END ===")
+            
+            # Parse the response
+            objects = self._parse_response(response.content[0].text)
+            
+            # Print parsed objects
+            print("=== PARSED OBJECTS START ===")
+            print(json.dumps(objects, indent=2))
+            print("=== PARSED OBJECTS END ===")
             
             return objects
 
         except Exception as e:
-            print(f"Error processing frame: {e}")
-            return self.last_processed_frame or []
+            print(f"Error in process_frame: {e}")
+            return []
 
     def _parse_response(self, response: str) -> List[Dict[Any, Any]]:
         """Parse the Anthropic API response into structured object data"""
         try:
             # Find JSON in the response using regex
             json_match = re.search(r'\{[\s\S]*\}', response)
-            if json_match:
-                json_str = json_match.group(0)
+            if not json_match:
+                print("No JSON found in response")
+                return []
+                
+            json_str = json_match.group(0)
+            try:
                 data = json.loads(json_str)
-                
-                # Validate and clean objects
-                objects = []
-                for obj in data.get('objects', []):
-                    if all(k in obj for k in ['label', 'category', 'description', 'confidence', 'bbox']):
-                        # Ensure bbox coordinates are integers
-                        obj['bbox'] = [int(coord) for coord in obj['bbox']]
-                        # Ensure confidence is float between 0 and 1
-                        obj['confidence'] = float(min(max(obj['confidence'], 0), 1))
-                        objects.append(obj)
-                
-                return objects
+            except json.JSONDecodeError as e:
+                print(f"Failed to parse JSON: {e}")
+                return []
             
-            return []
+            if not isinstance(data, dict) or 'objects' not in data:
+                print("Invalid JSON structure")
+                return []
                 
+            objects = []
+            for obj in data['objects']:
+                try:
+                    # Ensure all required fields are present
+                    required_fields = ['label', 'category', 'description', 'confidence', 'bbox']
+                    if not all(field in obj for field in required_fields):
+                        print(f"Missing required fields in object: {obj}")
+                        continue
+                    
+                    # Clean and validate the object data
+                    cleaned_obj = {
+                        'label': str(obj['label']).strip().lower(),
+                        'category': 'ingredient',  # Always set to ingredient
+                        'description': str(obj['description']).strip(),
+                        'confidence': float(min(max(float(obj.get('confidence', 0)), 0), 1)),
+                        'bbox': [int(coord) for coord in obj['bbox']]
+                    }
+                    
+                    objects.append(cleaned_obj)
+                    print(f"Successfully processed object: {cleaned_obj}")
+                except (ValueError, TypeError, KeyError) as e:
+                    print(f"Error processing object: {e}")
+                    continue
+            
+            print(f"Total valid objects found: {len(objects)}")
+            return objects
+            
         except Exception as e:
             print(f"Error parsing response: {e}")
             return []
-
-    def _update_cache(self, objects: List[Dict[Any, Any]]):
-        """Update the object detection cache"""
-        # Simple FIFO cache implementation
-        for obj in objects:
-            cache_key = f"{obj['label']}_{obj['category']}_{self.frame_count}"
-            self.cache[cache_key] = {
-                **obj,
-                'frame_number': self.frame_count,
-                'timestamp': time.time()
-            }
-            
-            # Remove oldest entries if cache is full
-            while len(self.cache) > self.cache_size:
-                oldest_key = min(self.cache.keys(), key=lambda k: self.cache[k]['timestamp'])
-                del self.cache[oldest_key]
-
-    async def search_objects(self, query: str) -> List[Dict[Any, Any]]:
-        """Search for objects in recent detections"""
-        matching_objects = []
-        for obj in self.cache.values():
-            if (query.lower() in obj['label'].lower() or 
-                query.lower() in obj['category'].lower() or
-                query.lower() in obj['description'].lower()):
-                matching_objects.append(obj)
-        
-        # Sort by frame number (most recent first)
-        matching_objects.sort(key=lambda x: x['frame_number'], reverse=True)
-        return matching_objects
-
-    def get_frame_objects(self, frame_number: int) -> List[Dict[Any, Any]]:
-        """Get all objects detected in a specific frame"""
-        return [obj for obj in self.cache.values() if obj['frame_number'] == frame_number]

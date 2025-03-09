@@ -1,0 +1,12 @@
+Metadata-Version: 2.2
+Name: thinkvision
+Version: 0.1
+Requires-Dist: fastapi
+Requires-Dist: uvicorn
+Requires-Dist: python-dotenv
+Requires-Dist: opencv-python
+Requires-Dist: numpy
+Requires-Dist: aiofiles
+Requires-Dist: google-generativeai
+Requires-Dist: pillow
+Dynamic: requires-dist
