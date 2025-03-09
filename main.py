@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Request
+from fastapi import FastAPI, UploadFile, File, Request, Form
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +10,8 @@ import tempfile
 import aiofiles
 from pathlib import Path
 from datetime import datetime
+import time
+import json
 
 load_dotenv()
 
@@ -28,12 +30,15 @@ app.add_middleware(
 os.makedirs("temp/uploads", exist_ok=True)
 os.makedirs("temp/frames", exist_ok=True)
 
+# Create static directories if they don't exist
+os.makedirs("static/frames", exist_ok=True)
+os.makedirs("temp", exist_ok=True)
+os.makedirs("output", exist_ok=True)
+
 # Mount static directories
 app.mount("/temp", StaticFiles(directory="temp"), name="temp")
 app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# Create static directories if they don't exist
-os.makedirs("static/frames", exist_ok=True)
+app.mount("/output", StaticFiles(directory="output"), name="output")
 
 video_processor = VideoProcessor(debug_mode=True)
 
@@ -42,361 +47,466 @@ async def root():
     """Serve the main application interface"""
     return """
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Ingredient Detection Assistant</title>
         <style>
             body {
-                font-family: Arial, sans-serif;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                 margin: 0;
                 padding: 0;
-                background: #f5f5f5;
-            }
-            .app-container {
-                display: flex;
-                height: 100vh;
-            }
-            .main-panel {
-                flex: 3;
-                padding: 20px;
-                overflow-y: auto;
-            }
-            .sidebar {
-                flex: 1;
-                background: white;
-                padding: 20px;
-                box-shadow: -2px 0 5px rgba(0,0,0,0.1);
-                overflow-y: auto;
-                min-width: 300px;
+                background-color: #f5f5f5;
+                color: #333;
             }
             .container {
-                background: white;
+                display: flex;
+                min-height: 100vh;
+            }
+            .sidebar {
+                width: 300px;
+                background-color: #2c3e50;
+                color: white;
                 padding: 20px;
-                border-radius: 8px;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+            }
+            .main-content {
+                flex: 1;
+                padding: 20px;
+                overflow-y: auto;
+            }
+            h1 {
+                color: #ecf0f1;
+                font-size: 24px;
                 margin-bottom: 20px;
             }
-            .upload-form {
-                display: flex;
-                flex-direction: column;
-                gap: 15px;
+            h2 {
+                color: #ecf0f1;
+                font-size: 18px;
+                margin-top: 30px;
+                border-bottom: 1px solid #34495e;
+                padding-bottom: 10px;
             }
-            .progress {
-                display: none;
-                margin-top: 20px;
+            .step-container {
+                background-color: white;
+                border-radius: 8px;
+                padding: 20px;
+                margin-bottom: 20px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             }
-            .button {
-                background: #007bff;
+            .step-title {
+                font-size: 18px;
+                font-weight: bold;
+                margin-bottom: 15px;
+                color: #2c3e50;
+            }
+            .btn {
+                background-color: #3498db;
                 color: white;
                 border: none;
-                padding: 10px 20px;
+                padding: 10px 15px;
                 border-radius: 4px;
                 cursor: pointer;
-                font-size: 16px;
+                font-size: 14px;
+                transition: background-color 0.3s;
             }
-            .button:hover {
-                background: #0056b3;
+            .btn:hover {
+                background-color: #2980b9;
             }
-            .button:disabled {
-                background: #cccccc;
+            .btn:disabled {
+                background-color: #95a5a6;
                 cursor: not-allowed;
             }
             .file-input {
-                border: 2px dashed #ccc;
-                padding: 20px;
-                text-align: center;
-                border-radius: 4px;
+                margin-bottom: 15px;
+            }
+            .progress-container {
+                margin-top: 15px;
+                display: none;
+            }
+            .progress-bar {
+                height: 10px;
+                background-color: #ecf0f1;
+                border-radius: 5px;
+                margin-top: 5px;
+                overflow: hidden;
+            }
+            .progress {
+                height: 100%;
+                background-color: #2ecc71;
+                width: 0%;
+                transition: width 0.3s;
             }
             .ingredient-list {
-                margin-top: 20px;
+                list-style-type: none;
+                padding: 0;
+                margin: 0;
             }
             .ingredient-item {
-                background: #f8f9fa;
-                padding: 10px;
-                margin-bottom: 10px;
-                border-radius: 4px;
+                padding: 8px 0;
+                border-bottom: 1px solid #34495e;
                 display: flex;
                 align-items: center;
             }
-            .ingredient-name {
-                flex-grow: 1;
-                font-weight: bold;
+            .confidence-indicator {
+                display: inline-block;
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                margin-right: 10px;
             }
-            .confidence-bar {
-                height: 5px;
-                width: 100px;
-                background: #e9ecef;
-                margin-left: 10px;
-                border-radius: 2px;
+            .high-confidence {
+                background-color: #2ecc71;
             }
-            .confidence-fill {
-                height: 100%;
-                background: #28a745;
-                border-radius: 2px;
+            .medium-confidence {
+                background-color: #f39c12;
+            }
+            .low-confidence {
+                background-color: #e74c3c;
             }
             .frame-container {
                 display: flex;
                 flex-wrap: wrap;
-                gap: 10px;
-                margin-top: 20px;
+                gap: 20px;
             }
-            .frame-item {
-                border: 1px solid #ddd;
-                border-radius: 4px;
-                padding: 10px;
-                width: calc(50% - 15px);
-                box-sizing: border-box;
+            .frame-card {
+                background-color: white;
+                border-radius: 8px;
+                overflow: hidden;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                width: calc(50% - 10px);
+                margin-bottom: 20px;
             }
             .frame-image {
                 width: 100%;
-                border-radius: 4px;
-                margin-bottom: 10px;
+                height: 300px;
+                object-fit: cover;
             }
-            .frame-info {
-                font-size: 12px;
-                color: #666;
+            .frame-details {
+                padding: 15px;
             }
             .frame-ingredients {
+                list-style-type: none;
+                padding: 0;
+                margin: 10px 0 0 0;
+            }
+            .frame-ingredient-item {
+                padding: 5px 0;
+                border-bottom: 1px solid #ecf0f1;
+                font-size: 14px;
+            }
+            .error-message {
+                color: #e74c3c;
+                background-color: #fadbd8;
+                padding: 10px;
+                border-radius: 4px;
                 margin-top: 10px;
+                display: none;
             }
-            .frame-ingredient {
-                display: inline-block;
-                background: #e9ecef;
-                padding: 3px 8px;
-                border-radius: 12px;
-                margin-right: 5px;
-                margin-bottom: 5px;
-                font-size: 12px;
-            }
-            .all-ingredients-title {
-                font-size: 18px;
-                font-weight: bold;
-                margin-bottom: 15px;
-                padding-bottom: 10px;
-                border-bottom: 1px solid #eee;
-            }
-            #uploadedVideoName {
-                margin-top: 10px;
-                font-weight: bold;
-            }
-            #videoPreview {
+            .video-preview {
                 max-width: 100%;
-                border-radius: 8px;
+                max-height: 300px;
+                margin-top: 15px;
+                display: none;
+            }
+            .json-info {
+                background-color: #e8f4f8;
+                padding: 15px;
+                border-radius: 4px;
                 margin-top: 15px;
                 display: none;
             }
         </style>
     </head>
     <body>
-        <div class="app-container">
-            <div class="main-panel">
-                <div class="container">
-                    <h1>Ingredient Detection Assistant</h1>
-                    <p>Upload a cooking video to detect ingredients in each frame.</p>
-                    
-                    <!-- Step 1: Upload Video -->
-                    <div class="upload-form">
-                        <h2>Step 1: Upload Video</h2>
-                        <div class="file-input">
-                            <input type="file" id="video" accept="video/*" onchange="handleVideoUpload()" />
-                        </div>
-                        <div id="uploadedVideoName"></div>
-                        <video id="videoPreview" controls></video>
-                    </div>
-                    
-                    <!-- Step 2: Process Video -->
-                    <div class="upload-form" style="margin-top: 30px;">
-                        <h2>Step 2: Process Video</h2>
-                        <button class="button" id="processButton" onclick="processVideo()" disabled>Process Video</button>
-                        <div class="progress" id="progress">
-                            <h3>Processing...</h3>
-                            <p id="status"></p>
-                        </div>
-                    </div>
-                </div>
+        <div class="container">
+            <div class="sidebar">
+                <h1>Ingredient Detection Assistant</h1>
                 
-                <!-- Results Section -->
-                <div class="container" id="resultsContainer" style="display: none;">
-                    <h2>Processed Frames</h2>
-                    <div id="frameResults" class="frame-container"></div>
+                <h2>Detected Ingredients</h2>
+                <div id="ingredientsList">
+                    <p>No ingredients detected yet. Upload and process a video to see ingredients.</p>
                 </div>
             </div>
             
-            <!-- Sidebar for All Ingredients -->
-            <div class="sidebar">
-                <div class="all-ingredients-title">All Detected Ingredients</div>
-                <div id="allIngredients" class="ingredient-list"></div>
+            <div class="main-content">
+                <div class="step-container">
+                    <div class="step-title">Step 1: Upload Video</div>
+                    <input type="file" id="videoFile" class="file-input" accept="video/*">
+                    <button id="uploadBtn" class="btn">Upload Video</button>
+                    <div id="uploadError" class="error-message"></div>
+                    <video id="videoPreview" class="video-preview" controls></video>
+                </div>
+                
+                <div class="step-container">
+                    <div class="step-title">Step 2: Process Video</div>
+                    <button id="processBtn" class="btn" disabled>Process Video</button>
+                    <div id="processError" class="error-message"></div>
+                    <div id="progressContainer" class="progress-container">
+                        <div>Processing video... <span id="progressText">0%</span></div>
+                        <div class="progress-bar">
+                            <div id="progressBar" class="progress"></div>
+                        </div>
+                    </div>
+                    <div id="jsonInfo" class="json-info">
+                        <div id="jsonPath"></div>
+                    </div>
+                </div>
+                
+                <div class="step-container">
+                    <div class="step-title">Step 3: Results</div>
+                    <div id="framesContainer" class="frame-container">
+                        <p>Process a video to see results.</p>
+                    </div>
+                </div>
             </div>
         </div>
-
-        <script>
-        let uploadedVideoPath = null;
         
-        function handleVideoUpload() {
-            const fileInput = document.getElementById('video');
-            const file = fileInput.files[0];
-            if (!file) {
-                return;
-            }
+        <script>
+            // Global variables
+            let uploadedVideoPath = '';
+            let jsonFilePath = '';
             
-            const formData = new FormData();
-            formData.append('video', file);
+            // DOM elements
+            const videoFileInput = document.getElementById('videoFile');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const processBtn = document.getElementById('processBtn');
+            const videoPreview = document.getElementById('videoPreview');
+            const uploadError = document.getElementById('uploadError');
+            const processError = document.getElementById('processError');
+            const progressContainer = document.getElementById('progressContainer');
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('progressText');
+            const ingredientsList = document.getElementById('ingredientsList');
+            const framesContainer = document.getElementById('framesContainer');
+            const jsonInfo = document.getElementById('jsonInfo');
+            const jsonPath = document.getElementById('jsonPath');
             
-            document.getElementById('uploadedVideoName').textContent = 'Uploading: ' + file.name;
-            document.getElementById('processButton').disabled = true;
+            // Event listeners
+            uploadBtn.addEventListener('click', uploadVideo);
+            processBtn.addEventListener('click', processVideo);
             
-            fetch('/upload', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+            // Functions
+            function uploadVideo() {
+                const file = videoFileInput.files[0];
+                if (!file) {
+                    showError(uploadError, 'Please select a video file first.');
+                    return;
                 }
-                return response.json();
-            })
-            .then(data => {
-                if (data.status === 'success') {
-                    uploadedVideoPath = data.video_path;
-                    document.getElementById('uploadedVideoName').textContent = 'Uploaded: ' + file.name;
-                    document.getElementById('processButton').disabled = false;
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                // Reset UI
+                uploadError.style.display = 'none';
+                uploadBtn.disabled = true;
+                uploadBtn.textContent = 'Uploading...';
+                
+                // Upload video
+                fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    // Update UI
+                    uploadBtn.textContent = 'Upload Complete';
+                    uploadedVideoPath = data.file_path;
                     
                     // Show video preview
-                    const videoPreview = document.getElementById('videoPreview');
-                    videoPreview.src = '/temp/uploads/' + data.filename;
+                    videoPreview.src = `/temp/${data.filename}`;
                     videoPreview.style.display = 'block';
-                } else {
-                    document.getElementById('uploadedVideoName').textContent = 'Error: ' + data.message;
+                    
+                    // Enable process button
+                    processBtn.disabled = false;
+                })
+                .catch(error => {
+                    showError(uploadError, `Error uploading video: ${error.message}`);
+                    uploadBtn.disabled = false;
+                    uploadBtn.textContent = 'Upload Video';
+                });
+            }
+            
+            function processVideo() {
+                if (!uploadedVideoPath) {
+                    showError(processError, 'Please upload a video first.');
+                    return;
                 }
-            })
-            .catch(error => {
-                document.getElementById('uploadedVideoName').textContent = 'Error: ' + error.message;
-                console.error('Error:', error);
-            });
-        }
-        
-        function processVideo() {
-            if (!uploadedVideoPath) {
-                alert('Please upload a video first');
-                return;
+                
+                // Reset UI
+                processError.style.display = 'none';
+                processBtn.disabled = true;
+                processBtn.textContent = 'Processing...';
+                progressContainer.style.display = 'block';
+                progressBar.style.width = '0%';
+                progressText.textContent = '0%';
+                framesContainer.innerHTML = '<p>Processing video...</p>';
+                ingredientsList.innerHTML = '<p>Detecting ingredients...</p>';
+                jsonInfo.style.display = 'none';
+                
+                // Create form data
+                const formData = new FormData();
+                formData.append('video_path', uploadedVideoPath);
+                
+                // Process video
+                fetch('/process', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    // Update UI
+                    processBtn.textContent = 'Processing Complete';
+                    progressBar.style.width = '100%';
+                    progressText.textContent = '100%';
+                    
+                    // Display frames
+                    displayFrames(data.frames);
+                    
+                    // Display ingredients
+                    displayIngredients(data.unique_ingredients);
+                    
+                    // Display JSON file info
+                    if (data.json_file) {
+                        jsonFilePath = data.json_file;
+                        jsonInfo.style.display = 'block';
+                        jsonPath.textContent = `JSON file saved to: ${data.json_file}`;
+                    }
+                })
+                .catch(error => {
+                    showError(processError, `Error processing video: ${error.message}`);
+                    processBtn.disabled = false;
+                    processBtn.textContent = 'Process Video';
+                    progressContainer.style.display = 'none';
+                });
             }
             
-            document.getElementById('progress').style.display = 'block';
-            document.getElementById('status').textContent = 'Starting video processing...';
-            document.getElementById('processButton').disabled = true;
-            document.getElementById('resultsContainer').style.display = 'none';
-            document.getElementById('allIngredients').innerHTML = '';
-            document.getElementById('frameResults').innerHTML = '';
-            
-            // Create FormData to send the video path
-            const formData = new FormData();
-            formData.append('video_path', uploadedVideoPath);
-            
-            fetch('/process', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+            function displayFrames(frames) {
+                if (!frames || frames.length === 0) {
+                    framesContainer.innerHTML = '<p>No frames were processed.</p>';
+                    return;
                 }
-                return response.json();
-            })
-            .then(data => {
-                document.getElementById('status').textContent = 'Processing complete!';
-                document.getElementById('resultsContainer').style.display = 'block';
                 
-                // Display all ingredients in sidebar
-                displayAllIngredients(data.all_ingredients || []);
+                framesContainer.innerHTML = '';
                 
-                // Display frame results
-                displayFrameResults(data.frames || []);
-                
-                document.getElementById('processButton').disabled = false;
-            })
-            .catch(error => {
-                document.getElementById('status').textContent = 'Error: ' + error;
-                document.getElementById('processButton').disabled = false;
-                console.error('Error:', error);
-            });
-        }
-        
-        function displayAllIngredients(ingredients) {
-            const container = document.getElementById('allIngredients');
-            container.innerHTML = '';
-            
-            if (!ingredients || ingredients.length === 0) {
-                container.innerHTML = '<p>No ingredients detected</p>';
-                return;
-            }
-            
-            // Sort ingredients alphabetically
-            ingredients.sort();
-            
-            ingredients.forEach(ingredient => {
-                const item = document.createElement('div');
-                item.className = 'ingredient-item';
-                item.innerHTML = `
-                    <div class="ingredient-name">${ingredient}</div>
-                `;
-                container.appendChild(item);
-            });
-        }
-        
-        function displayFrameResults(frames) {
-            const container = document.getElementById('frameResults');
-            container.innerHTML = '';
-            
-            if (!frames || frames.length === 0) {
-                container.innerHTML = '<p>No frames processed</p>';
-                return;
-            }
-            
-            frames.forEach(frame => {
-                const frameItem = document.createElement('div');
-                frameItem.className = 'frame-item';
-                
-                // Create ingredients list for this frame
-                let ingredientsHtml = '';
-                if (frame.ingredients && frame.ingredients.length > 0) {
+                frames.forEach(frame => {
+                    const frameCard = document.createElement('div');
+                    frameCard.className = 'frame-card';
+                    
+                    const frameImage = document.createElement('img');
+                    frameImage.className = 'frame-image';
+                    frameImage.src = frame.frame;
+                    frameImage.alt = 'Processed Frame';
+                    
+                    const frameDetails = document.createElement('div');
+                    frameDetails.className = 'frame-details';
+                    
+                    const ingredientsTitle = document.createElement('div');
+                    ingredientsTitle.className = 'step-title';
+                    ingredientsTitle.textContent = `Ingredients (${frame.ingredients.length})`;
+                    
+                    const ingredientsList = document.createElement('ul');
+                    ingredientsList.className = 'frame-ingredients';
+                    
                     frame.ingredients.forEach(ingredient => {
-                        ingredientsHtml += `<span class="frame-ingredient">${ingredient.label}</span>`;
+                        const ingredientItem = document.createElement('li');
+                        ingredientItem.className = 'frame-ingredient-item';
+                        
+                        // Determine confidence class
+                        let confidenceClass = 'low-confidence';
+                        if (ingredient.confidence >= 0.8) {
+                            confidenceClass = 'high-confidence';
+                        } else if (ingredient.confidence >= 0.5) {
+                            confidenceClass = 'medium-confidence';
+                        }
+                        
+                        ingredientItem.innerHTML = `
+                            <span class="confidence-indicator ${confidenceClass}"></span>
+                            ${ingredient.label} (${(ingredient.confidence * 100).toFixed(0)}%)
+                        `;
+                        
+                        ingredientsList.appendChild(ingredientItem);
                     });
-                } else {
-                    ingredientsHtml = '<p>No ingredients detected in this frame</p>';
+                    
+                    frameDetails.appendChild(ingredientsTitle);
+                    frameDetails.appendChild(ingredientsList);
+                    
+                    frameCard.appendChild(frameImage);
+                    frameCard.appendChild(frameDetails);
+                    
+                    framesContainer.appendChild(frameCard);
+                });
+            }
+            
+            function displayIngredients(ingredients) {
+                if (!ingredients || ingredients.length === 0) {
+                    ingredientsList.innerHTML = '<p>No ingredients detected.</p>';
+                    return;
                 }
                 
-                frameItem.innerHTML = `
-                    <img src="${frame.frame_path}" class="frame-image" alt="Frame">
-                    <div class="frame-ingredients">
-                        ${ingredientsHtml}
-                    </div>
-                `;
-                container.appendChild(frameItem);
-            });
-        }
+                const list = document.createElement('ul');
+                list.className = 'ingredient-list';
+                
+                ingredients.forEach(ingredient => {
+                    const item = document.createElement('li');
+                    item.className = 'ingredient-item';
+                    item.textContent = ingredient;
+                    list.appendChild(item);
+                });
+                
+                ingredientsList.innerHTML = '';
+                ingredientsList.appendChild(list);
+            }
+            
+            function showError(element, message) {
+                element.textContent = message;
+                element.style.display = 'block';
+                setTimeout(() => {
+                    element.style.display = 'none';
+                }, 5000);
+            }
         </script>
     </body>
     </html>
     """
 
 @app.post("/upload")
-async def upload_video(video: UploadFile = File(...)):
-    """Handle video file upload"""
+async def upload_video(file: UploadFile = File(...)):
+    """Upload a video file and save it to the temp directory"""
     try:
         # Create a unique filename
-        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{video.filename}"
-        file_path = os.path.join("temp", "uploads", filename)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{file.filename}"
+        file_path = f"temp/{filename}"
         
-        # Save uploaded file
+        # Save the uploaded file
         async with aiofiles.open(file_path, 'wb') as out_file:
-            content = await video.read()
+            content = await file.read()
             await out_file.write(content)
         
         return JSONResponse({
             "status": "success",
             "message": "Video uploaded successfully",
-            "video_path": file_path,
+            "file_path": file_path,
             "filename": filename
         })
         
@@ -404,62 +514,62 @@ async def upload_video(video: UploadFile = File(...)):
         print(f"Error uploading video: {str(e)}")
         return JSONResponse({
             "status": "error",
-            "message": str(e)
+            "message": f"Failed to upload video: {str(e)}"
         }, status_code=500)
 
 @app.post("/process")
-async def process_video(request: Request):
-    """Process uploaded video to detect ingredients"""
-    form = await request.form()
-    video_path = form.get("video_path")
-    
-    if not video_path:
-        return {"error": "No video path provided"}
-    
-    if not os.path.exists(video_path):
-        return {"error": f"Video file not found at {video_path}"}
-    
-    # Create a VideoProcessor instance
-    processor = VideoProcessor()
-    
-    # Create a list to store all unique ingredients
-    all_ingredients = set()
-    
-    # Create a list to store processed frames
-    processed_frames = []
-    
-    # Process the video
+async def process_video(video_path: str = Form(...)):
+    """Process a video file and extract ingredients from frames"""
     try:
-        print(f"Processing video: {video_path}")
-        async for result in processor.process_video(video_path, sample_rate=10):
-            frame_path = result.get("frame_path", "")
-            ingredients = result.get("ingredients", [])
+        if not os.path.exists(video_path):
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"Video file not found: {video_path}"}
+            )
             
-            # Debug information
-            print(f"Frame: {frame_path}")
-            print(f"Detected {len(ingredients)} ingredients in this frame")
-            
-            for ingredient in ingredients:
-                print(f"  - {ingredient['label']} (confidence: {ingredient['confidence']:.2f})")
-                all_ingredients.add(ingredient['label'])
-            
-            processed_frames.append({
-                "frame_path": frame_path,
-                "ingredients": ingredients
-            })
+        # Process video with VideoProcessor
+        frames = []
+        unique_ingredients = []
         
-        # Return the processed frames and all unique ingredients
-        return {
-            "status": "success",
-            "message": "Video processed successfully",
-            "all_ingredients": list(all_ingredients),
-            "frames": processed_frames
-        }
+        async for result in video_processor.process_video(video_path):
+            if "summary" in result:
+                # This is the final summary result
+                unique_ingredients = result.get("unique_ingredients", [])
+                
+                # Save ingredients to JSON file
+                ingredients_data = {
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "video_path": video_path,
+                    "ingredients": unique_ingredients
+                }
+                
+                # Create output directory if it doesn't exist
+                os.makedirs("output", exist_ok=True)
+                
+                # Generate a filename based on timestamp
+                json_filename = f"output/ingredients_{time.strftime('%Y%m%d_%H%M%S')}.json"
+                
+                # Write to JSON file
+                with open(json_filename, "w") as f:
+                    json.dump(ingredients_data, f, indent=4)
+                
+                print(f"Ingredients saved to {json_filename}")
+                
+                # Add the JSON file path to the result
+                result["json_file"] = json_filename
+            else:
+                # This is a frame result
+                frames.append(result)
+        
+        return {"frames": frames, "unique_ingredients": unique_ingredients, "json_file": json_filename if 'json_filename' in locals() else None}
     except Exception as e:
         print(f"Error processing video: {str(e)}")
         import traceback
         traceback.print_exc()
-        return {"status": "error", "message": f"Error processing video: {str(e)}"}
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to process video: {str(e)}"}
+        )
 
 @app.get("/status")
 async def get_status():
