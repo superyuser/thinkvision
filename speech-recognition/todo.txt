@@ -1,0 +1,16 @@
+live feed -> extract audio -> 
+  - intent: what user needs
+  - identify objects in the current scene (input: detected objects + memory)
+  - LLM -> generate response (ask user back)
+  - TTS
+
+speech-to-text: whisper
+
+
+requirements:
+pydub
+transformers
+torch
+pydub
+google-genai
+
