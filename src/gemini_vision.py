@@ -74,32 +74,6 @@ Important guidelines:
 6. If the image doesn't contain food, return an empty objects array"""
 
         try:
-            # Use mock data for testing to avoid API quota issues
-            mock_ingredients = [
-                {"label": "tomato", "category": "ingredient", "confidence": 0.95},
-                {"label": "onion", "category": "ingredient", "confidence": 0.92},
-                {"label": "garlic", "category": "ingredient", "confidence": 0.88},
-                {"label": "bell pepper", "category": "ingredient", "confidence": 0.85},
-                {"label": "olive oil", "category": "ingredient", "confidence": 0.82},
-                {"label": "salt", "category": "ingredient", "confidence": 0.78},
-                {"label": "black pepper", "category": "ingredient", "confidence": 0.75},
-                {"label": "pasta", "category": "ingredient", "confidence": 0.90},
-                {"label": "cheese", "category": "ingredient", "confidence": 0.87},
-                {"label": "basil", "category": "ingredient", "confidence": 0.83}
-            ]
-            
-            # Randomly select 2-5 ingredients for each frame to simulate real detection
-            import random
-            num_ingredients = random.randint(2, 5)
-            selected_ingredients = random.sample(mock_ingredients, num_ingredients)
-            
-            if debug_mode:
-                print(f"Using mock data: {len(selected_ingredients)} ingredients selected")
-            
-            return selected_ingredients
-            
-            # Uncomment this section to use the real Gemini API when quota is available
-            """
             # Process with Gemini - use synchronous call to avoid await issues
             response = self.model.generate_content([prompt, pil_image])
             raw_response = response.text
@@ -155,9 +129,8 @@ Important guidelines:
                     print(f"Raw response: {response.text}")
                 # Return empty list on error
                 return []
-            """
         except Exception as e:
             if debug_mode:
                 print(f"Error calling Gemini API: {e}")
-            # Return mock data on error to ensure the app continues to work
-            return [{"label": "mock ingredient", "category": "ingredient", "confidence": 0.99}]
+            # Return empty list on error
+            return []
