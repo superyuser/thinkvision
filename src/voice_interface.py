@@ -84,26 +84,35 @@ class VoiceInterface:
         # Create a context-aware prompt that includes detected objects
         objects_context = ""
         if self.detected_objects:
-            objects_list = [f"{obj['label']} ({obj.get('confidence', 0):.2f})" 
-                          for obj in self.detected_objects]
-            objects_context = "Detected objects: " + ", ".join(objects_list)
+            objects_list = [obj['label'] for obj in self.detected_objects]
+            objects_context = "Available ingredients: " + ", ".join(objects_list)
 
-        prompt = f"""
-        User Query: "{text}"
-        {objects_context}
+        if not text:  # Initial greeting and ingredient acknowledgment
+            prompt = f"""
+            {objects_context}
 
-        Rules:
-        - Be super casual and friendly, like chatting with a buddy
-        - Keep response under 30 words
-        - Always end with a short question, unless the user says "bye" or similar
-        - Use casual language and contractions
-        - Focus on answering questions about the detected objects
-        - If no relevant objects are detected, mention that
-        """
+            You are a friendly cooking assistant. Looking at these ingredients:
+            1. First, acknowledge the variety of ingredients you see
+            2. Then, ask the user what kind of meal they'd like to make (casual or fancy dinner, lunch, etc.)
+            3. Keep it casual and friendly, under 30 words
+            """
+        elif "bye" in text.lower():
+            return "Catch you later! It was fun cooking together!"
+        else:
+            prompt = f"""
+            {objects_context}
+            User Query: "{text}"
+
+            You are a friendly cooking assistant. Rules:
+            1. If user wants meal suggestions, create an innovative recipe using ONLY the available ingredients
+            2. Be super casual and friendly, like chatting with a buddy
+            3. Keep response under 30 words
+            4. Always end with a question about their preferences or if they need more details
+            5. Focus on practical, doable suggestions with the ingredients we have
+            """
 
         response = self.model.generate_content(prompt)
         response_text = response.text.strip()
-
         print(f"Gemini response: {response_text}")
         return response_text
 
